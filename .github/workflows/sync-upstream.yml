@@ -1,0 +1,92 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 每 6 小时同步一次（UTC 时间 0/6/12/18 点）
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Sync from upstream
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/linguo2625469/workbuddy2api-panel.git
+          git fetch upstream main
+
+      - name: Sync
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            echo "✅ 已与上游完全一致，无需同步"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "status=no-new-commits" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ 上游暂无新提交（fork 领先或已同步），跳过"
+            exit 0
+          fi
+
+          # fork 落后于上游：先尝试快进
+          if git merge --ff-only upstream/main 2>/dev/null; then
+            git push origin HEAD:main
+            echo "status=fast-forward" >> "$GITHUB_OUTPUT"
+            echo "✅ 已快进同步到 main"
+            exit 0
+          fi
+
+          # 无法快进：尝试三方合并，自动解决则直接推送
+          if git merge --no-edit upstream/main 2>/dev/null; then
+            git push origin HEAD:main
+            echo "status=merged" >> "$GITHUB_OUTPUT"
+            echo "✅ 已自动合并上游更新并推送"
+            exit 0
+          fi
+
+          # 冲突：放弃合并，交给人处理
+          git merge --abort
+          echo "status=conflict" >> "$GITHUB_OUTPUT"
+          echo "⚠️ 存在冲突，将创建 PR 供人工合并"
+
+      - name: Open sync PR (on conflict)
+        if: steps.sync.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="sync/upstream-main"
+          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+            git checkout -b "$BRANCH" upstream/main
+            git push -u origin "$BRANCH"
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: 同步上游更新（含冲突）" \
+              --body "自动同步上游 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 的最新更新时出现冲突，请人工确认合并。"
+            echo "✅ 已创建同步 PR"
+          else
+            echo "ℹ️ 已存在打开的同步 PR，跳过"
+          fi
