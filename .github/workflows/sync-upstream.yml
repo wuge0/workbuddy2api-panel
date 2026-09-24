@@ -2,8 +2,8 @@ name: Sync Upstream
 
 on:
   schedule:
-    # 每 6 小时同步一次（UTC 时间 0/6/12/18 点）
-    - cron: "0 */6 * * *"
+    # 每周一 UTC 0 点同步一次
+    - cron: "0 0 * * 1"
   workflow_dispatch:
 
 permissions:
